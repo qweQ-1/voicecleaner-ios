@@ -13,6 +13,7 @@ struct ContentView: View {
                     controls
                     modeSelector
                     strengthSlider
+                    hardwareCard
                     noiseProfileCard
                     instructionsCard
                 }
@@ -20,15 +21,6 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("净声")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        viewModel.cycleRoute()
-                    } label: {
-                        Label(routeTitle, systemImage: "arrow.triangle.swap")
-                    }
-                }
-            }
         }
         .task {
             await viewModel.bootstrap()
@@ -211,6 +203,31 @@ struct ContentView: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
     }
 
+    // MARK: - 硬件语音处理
+
+    private var hardwareCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $viewModel.useHardwareVoiceProcessing) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Apple 硬件语音处理").font(.subheadline.bold())
+                    Text("系统 DSP 提供回声消除 + 自动增益 + 硬件降噪，效果远好于纯软件算法，且几乎不占 CPU。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .disabled(viewModel.isRunning)
+
+            if viewModel.isRunning {
+                Text("需停止后重新开始才能生效")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+    }
+
     // MARK: - 噪声剖面
 
     private var noiseProfileCard: some View {
@@ -240,6 +257,14 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            Divider().padding(.vertical, 2)
+
+            Text("关于「系统级虚拟麦克风」").font(.caption.bold())
+            Text("iPhone 上做不到。Apple 的 DriverKit 音频驱动（AudioDriverKit）官方只支持 macOS 和 M 芯片 iPadOS，且需要向 Apple 单独申请 com.apple.developer.driverkit 权限。所以这里用外放接管的方式。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
@@ -247,25 +272,14 @@ struct ContentView: View {
 
     private var instructions: [String] {
         switch viewModel.route {
-        case .systemDriver:
-            return [
-                "本机已安装系统级音频驱动扩展时，系统设置里会出现新的麦克风设备，直接在目标 App 里选它即可。",
-                "若列表里没看到，去「设置 → 通用 → VPN 与设备管理」信任并启用扩展。"
-            ]
         case .speakerRelay:
             return [
-                "1. 在本 App 选择「静音（供其他 App 使用）」并开始降噪。",
-                "2. 再切到「实时监听」模式，让处理后的声音从扬声器放出。",
-                "3. 把目标 App 的麦克风选为「扬声器 + 麦克风」，或让手机靠近麦克风位置。",
-                "这是折中方案：音质受房间声学影响，且目标 App 会同时录到环境底噪。"
+                "1. 选「实时监听」模式并开始降噪，处理后的声音会从扬声器放出。",
+                "2. 在目标 App（如微信、钉钉、录音机）里正常使用，麦克风会拾取扬声器里干净的语音。",
+                "3. 想减少环境噪音干扰时，把手机麦克风孔贴近嘴部稍下方。",
+                "这是折中方案：音质受房间声学影响，目标 App 仍会录到少量环境底噪。",
+                "若目标 App 支持选输入设备，可优先选「扬声器 + 麦克风」并把音量调低以减少失真。"
             ]
-        }
-    }
-
-    private var routeTitle: String {
-        switch viewModel.route {
-        case .systemDriver: return "系统驱动"
-        case .speakerRelay: return "外放接管"
         }
     }
 }

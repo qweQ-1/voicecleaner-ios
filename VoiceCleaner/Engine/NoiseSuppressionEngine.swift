@@ -136,14 +136,21 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
     /// 启动引擎。
     /// - Parameter mode: 输出模式
-    func start(mode: OutputMode) throws {
+    /// - Parameter useHardwareVoiceProcessing: 是否启用 Apple 硬件语音处理单元
+    func start(mode: OutputMode, useHardwareVoiceProcessing: Bool = true) throws {
         guard !isRunning else { return }
 
         // 1) 配置音频会话
+        //    硬件 VP 单元只在 .voiceChat 模式下生效
         if mode == .silent || mode == .record {
-            try AudioSessionConfigurator.configureForCaptureOnly()
+            try AudioSessionConfigurator.configureForCaptureOnly(
+                voiceChatMode: useHardwareVoiceProcessing
+            )
         } else {
-            try AudioSessionConfigurator.configure(allowBluetooth: false)
+            try AudioSessionConfigurator.configure(
+                allowBluetooth: false,
+                voiceChatMode: useHardwareVoiceProcessing
+            )
         }
 
         // 2) 确定实际输入格式
@@ -155,7 +162,15 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         }
         format = inputFormat
 
-        // 3) 重新配置降噪器以匹配实际采样率
+        // 3) 启用 Apple 硬件语音处理单元（AEC + AGC + 硬件降噪）
+        //    必须在 installTap 之前调用，否则不生效。
+        //    这是效果好坏的最大变量：硬件 DSP 的效果远好于纯软件算法，
+        //    而且几乎不占 CPU。我们把它的输出再喂给自研 STFT 降噪做二次处理。
+        if useHardwareVoiceProcessing {
+            enableHardwareVoiceProcessing()
+        }
+
+        // 4) 重新配置降噪器以匹配实际采样率
         var cfg = denoiserConfig
         cfg.sampleRate = Float(inputFormat.sampleRate)
         denoiserConfig = cfg.validated()
@@ -239,6 +254,31 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
             self.processedBuffer = [Float](repeating: 0, count: self.denoiserConfig.hopSize)
         }
     }
+
+    // MARK: - 硬件语音处理
+
+    /// 启用/禁用 Apple 的语音处理单元（voice processing unit）。
+    ///
+    /// 这个单元由系统提供，做三件事：
+    /// - **AEC**（回声消除）：消除扬声器外放被麦克风拾取的回声
+    /// - **AGC**（自动增益控制）：把音量拉到稳定水平
+    /// - **硬件降噪**：抑制稳态背景噪声
+    ///
+    /// 跑在硬件/DSP 上，CPU 占用几乎为零，效果也远好于纯软件算法。
+    /// 但**必须**在 `installTap` 之前调用，且音频会话要用 `.voiceChat` 模式，
+    /// 否则系统不会走这条链路。
+    private func enableHardwareVoiceProcessing() {
+        do {
+            try inputNode.setVoiceProcessingEnabled(true)
+            isHardwareVoiceProcessingEnabled = true
+        } catch {
+            // 真机不支持时（如部分 iPad / 模拟器）静默降级到纯软件降噪
+            isHardwareVoiceProcessingEnabled = false
+        }
+    }
+
+    /// 是否成功启用了硬件语音处理
+    private(set) var isHardwareVoiceProcessingEnabled = false
 
     // MARK: - 采集回调
 

@@ -29,6 +29,8 @@ final class VoiceCleanerViewModel: ObservableObject {
     @Published private(set) var noiseProfile: [Float] = []
     @Published private(set) var route: AudioRoute = .speakerRelay
     @Published private(set) var hasMicrophonePermission = false
+    /// 是否启用 Apple 硬件语音处理单元（AEC + AGC + 硬件降噪）
+    @Published var useHardwareVoiceProcessing = true
 
     private let engine = NoiseSuppressionEngine()
     private var statsTimer: Timer?
@@ -99,7 +101,7 @@ final class VoiceCleanerViewModel: ObservableObject {
             stopProfileTimer()
         } else {
             do {
-                try engine.start(mode: mode)
+                try engine.start(mode: mode, useHardwareVoiceProcessing: useHardwareVoiceProcessing)
                 engine.setStrength(strength)
                 startProfileTimer()
             } catch {
@@ -114,10 +116,6 @@ final class VoiceCleanerViewModel: ObservableObject {
 
     func applyStrength(_ value: Float) {
         engine.setStrength(value)
-    }
-
-    func cycleRoute() {
-        route = (route == .systemDriver) ? .speakerRelay : .systemDriver
     }
 
     // MARK: - 统计刷新

@@ -30,22 +30,29 @@ enum AudioSessionConfigurator {
     /// 配置会话用于「麦克风采集 + 处理后播放」。
     ///
     /// - Parameter allowBluetooth: 是否允许蓝牙耳机（延迟较高，但可以戴着耳机实时听效果）
-    static func configure(allowBluetooth: Bool) throws {
+    /// - Parameter voiceChatMode: 是否使用 `.voiceChat` 模式。
+    ///   Apple 的硬件语音处理单元（AEC + AGC + 硬件降噪）**只在 `.voiceChat` 模式下生效**，
+    ///   这是降噪效果的最大变量，必须默认开启。
+    static func configure(allowBluetooth: Bool, voiceChatMode: Bool = true) throws {
         let session = AVAudioSession.sharedInstance()
         var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
         if allowBluetooth {
             options.insert(.allowBluetooth)
         }
-        try session.setCategory(.playAndRecord, mode: .measurement, options: options)
+        let mode: AVAudioSession.Mode = voiceChatMode ? .voiceChat : .measurement
+        try session.setCategory(.playAndRecord, mode: mode, options: options)
         try session.setPreferredSampleRate(sampleRate)
         try session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
-    /// 配置会话用于「只采集不外放」（避免回授啸叫）。
-    static func configureForCaptureOnly() throws {
+    /// 配置会话用于「只采集不外放」（避免回授）。
+    ///
+    /// 仍然使用 `.voiceChat` 模式以启用硬件语音处理。
+    static func configureForCaptureOnly(voiceChatMode: Bool = true) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [])
+        let mode: AVAudioSession.Mode = voiceChatMode ? .voiceChat : .measurement
+        try session.setCategory(.record, mode: mode, options: [])
         try session.setPreferredSampleRate(sampleRate)
         try session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
