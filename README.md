@@ -75,8 +75,25 @@ python3 Tools/verify_dsp.py
 | 验证项 | 结果 |
 | --- | --- |
 | STFT 恒等重建（增益强制为 1） | 最大误差 **3.3e-16**，对齐偏移 **0 点** ✅ |
-| 噪声压制 | 噪声段 **-14.6 dB** ✅ |
-| 语音保留 | 保留 **32.5%** 能量（未被过度压制）✅ |
+| 噪声压制 | 噪声段 **-21.9 dB** ✅ |
+| 语音保留 | 保留 **68.8%** 能量（未被过度压制）✅ |
+| 直流偏置抑制 | 残余 **0.025**（输入 0.3）✅ |
+
+### Python 与 Swift 双眼交叉验证
+
+`Tools/predict_swift_tests.py` 用 Python 复刻 `Tests/Unit/SpectralDenoiserTests.swift`
+里每个测试的**信号生成方式（逐位对齐的 LCG）与断言阈值**，本地先预测一遍，
+避免每轮 CI 等 8 分钟才发现阈值定错。
+
+这套双轨验证抓出过一个只有 Swift 侧才有的 bug：
+
+> Python 用 `np.fft.irfft`，它会自动从半谱补全 Hermitian 对称性；
+> 而自研 FFT 输出的是完整复数谱，我只对前半 257 个频点施加了增益，
+> 负频率半边保持原值 → 频谱不再共轭对称 → 逆变换取实部等价于
+> 把增益平均成 `(g+1)/2`，降噪量**直接减半**。
+> 症状是稳态纯音只被压到 54%，正好等于 `(谱底 0.08 + 1) / 2`。
+
+**两边结果不一致本身就是信号** —— 这正是保留两套实现的意义。
 
 同一套时序约定在 `Tests/Unit/SpectralDenoiserTests.swift` 里用
 `testPerfectReconstructionWithUnityGain` 和 `testOutputIsTimeAlignedWithInput`
