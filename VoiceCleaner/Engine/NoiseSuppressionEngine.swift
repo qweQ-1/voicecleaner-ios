@@ -96,7 +96,7 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
         let hop = cfg.hopSize
         // 环形缓冲留 16 帧余量，容忍调度抖动
-        let ringSize = nextPowerOfTwo(hop * 16)
+        let ringSize = Self.nextPowerOfTwo(hop * 16)
         inputBuffer = AudioRingBuffer(capacity: ringSize)
         outputBuffer = AudioRingBuffer(capacity: ringSize)
 
@@ -107,7 +107,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         inputNode = engine.inputNode
     }
 
-    private func nextPowerOfTwo(_ v: Int) -> Int {
+    /// 静态方法：init 里所有存储属性初始化完成前不能调用实例方法
+    private static func nextPowerOfTwo(_ v: Int) -> Int {
         var n = 1
         while n < v { n <<= 1 }
         return n
