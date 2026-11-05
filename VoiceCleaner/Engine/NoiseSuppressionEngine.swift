@@ -85,6 +85,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     private var inputCallbackCount = 0
     private var didReportAudioFlow = false
     private var processingStartedAt: Date?
+    /// 第一个采集回调实际拿到的格式（用来核对 tap 是否装在正确的格式上）
+    private var firstTapFormatDescription: String?
 
     // MARK: - 录制
 
@@ -225,7 +227,24 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         log.record("音频会话", "\(session.category.rawValue) / \(session.mode.rawValue)，"
                   + "采样率 \(Int(session.sampleRate)) Hz，缓冲 \(String(format: "%.1f", session.ioBufferDuration * 1000)) ms")
 
-        // ---- 3) 输入格式 ----
+        // ---- 3) 硬件语音处理单元（AEC + AGC + 硬件降噪）----
+        // **必须在读输入格式和装 tap 之前启用**：它会让 IO 单元重新配置，
+        // 输入节点的格式可能随之改变。顺序反了的话，tap 会装在一个已经过期的
+        // 格式上，回调可能一次都不触发——表现正是"引擎启动成功但收不到音频"。
+        if useHardwareVoiceProcessing {
+            enableHardwareVoiceProcessing()
+            if isHardwareVoiceProcessingEnabled {
+                log.record("硬件语音处理", "已启用")
+            } else {
+                // 不致命：纯软件降噪仍然可用
+                log.record("硬件语音处理", "本机不支持，已跳过（用纯软件降噪）")
+            }
+        } else {
+            hardwareFallbackReason = "用户关闭或已降级"
+            log.record("硬件语音处理", "未启用")
+        }
+
+        // ---- 4) 输入格式（在硬件语音处理启用**之后**读取）----
         // 会话刚激活时输入格式偶尔还是 0；重新激活一次再读。
         var inputFormat = inputNode.inputFormat(forBus: 0)
         if inputFormat.sampleRate <= 0 || inputFormat.channelCount == 0 {
@@ -240,22 +259,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
                 "格式 \(inputFormat.sampleRate) Hz / \(inputFormat.channelCount) 声道")
         }
         format = inputFormat
-        log.record("输入格式", "\(Int(inputFormat.sampleRate)) Hz，\(inputFormat.channelCount) 声道")
-
-        // ---- 4) 硬件语音处理单元（AEC + AGC + 硬件降噪）----
-        // 必须在 installTap 之前调用；只在 .voiceChat 模式下生效。
-        if useHardwareVoiceProcessing {
-            enableHardwareVoiceProcessing()
-            if isHardwareVoiceProcessingEnabled {
-                log.record("硬件语音处理", "已启用")
-            } else {
-                // 不致命：纯软件降噪仍然可用
-                log.record("硬件语音处理", "本机不支持，已跳过（用纯软件降噪）")
-            }
-        } else {
-            hardwareFallbackReason = "用户关闭或已降级"
-            log.record("硬件语音处理", "未启用")
-        }
+        log.record("输入格式", "\(Int(inputFormat.sampleRate)) Hz，\(inputFormat.channelCount) 声道"
+                  + "（硬件语音处理\(isHardwareVoiceProcessingEnabled ? "开启后" : "未开")读取）")
 
         // ---- 5) 降噪器按实际采样率重建 ----
         var cfg = denoiserConfig
@@ -302,6 +307,7 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         processingStartedAt = Date()
         didReportAudioFlow = false
         inputCallbackCount = 0
+        firstTapFormatDescription = nil
         startProcessingTimer()
     }
 
@@ -403,6 +409,9 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
         // 诊断计数：用来区分「tap 完全没被驱动」和「有回调但处理没跑起来」
+        if firstTapFormatDescription == nil {
+            firstTapFormatDescription = "\(Int(buffer.format.sampleRate)) Hz / \(buffer.format.channelCount) 声道"
+        }
         inputCallbackCount += 1
         inputBuffer.write(channelData, count: count)
     }
@@ -481,7 +490,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
         if denoiser.processedFrames > 0 {
             didReportAudioFlow = true
-            log.record("音频流", "已处理首帧（采集回调 \(inputCallbackCount) 次）")
+            let tapInfo = firstTapFormatDescription.map { "，tap 格式 \($0)" } ?? ""
+            log.record("音频流", "已处理首帧（采集回调 \(inputCallbackCount) 次\(tapInfo)）")
             return
         }
 
