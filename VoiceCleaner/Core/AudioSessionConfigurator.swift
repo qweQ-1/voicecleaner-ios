@@ -2,16 +2,24 @@ import Foundation
 import AVFoundation
 
 /// 音频会话配置：统一处理 iOS 上的录音权限、采样率、扬声器路由。
+///
+/// 关于 `.voiceChat` 模式：Apple 的硬件语音处理单元（AEC + AGC + 硬件降噪）
+/// 只在 `.voiceChat` 模式下生效，这是降噪效果的最大变量，所以默认开启。
 enum AudioSessionConfigurator {
     static let sampleRate: Double = 48_000
 
     /// 请求麦克风权限。
+    ///
+    /// 统一走 completion-handler 形式 + continuation，
+    /// 不依赖 ObjC importer 自动生成 async 版本（跨 SDK 版本更稳）。
     /// - Returns: 是否已授权
     static func requestMicrophonePermission() async -> Bool {
-        if #available(iOS 17.0, *) {
-            return await AVAudioApplication.requestRecordPermission()
-        } else {
-            return await withCheckedContinuation { continuation in
+        await withCheckedContinuation { continuation in
+            if #available(iOS 17.0, *) {
+                AVAudioApplication.requestRecordPermission { granted in
+                    continuation.resume(returning: granted)
+                }
+            } else {
                 AVAudioSession.sharedInstance().requestRecordPermission { granted in
                     continuation.resume(returning: granted)
                 }
@@ -27,32 +35,18 @@ enum AudioSessionConfigurator {
         }
     }
 
-    /// 配置会话用于「麦克风采集 + 处理后播放」。
+    /// 配置会话。
     ///
-    /// - Parameter allowBluetooth: 是否允许蓝牙耳机（延迟较高，但可以戴着耳机实时听效果）
-    /// - Parameter voiceChatMode: 是否使用 `.voiceChat` 模式。
-    ///   Apple 的硬件语音处理单元（AEC + AGC + 硬件降噪）**只在 `.voiceChat` 模式下生效**，
-    ///   这是降噪效果的最大变量，必须默认开启。
-    static func configure(allowBluetooth: Bool, voiceChatMode: Bool = true) throws {
-        let session = AVAudioSession.sharedInstance()
-        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
-        if allowBluetooth {
-            options.insert(.allowBluetooth)
-        }
-        let mode: AVAudioSession.Mode = voiceChatMode ? .voiceChat : .measurement
-        try session.setCategory(.playAndRecord, mode: mode, options: options)
-        try session.setPreferredSampleRate(sampleRate)
-        try session.setPreferredIOBufferDuration(0.005)
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-    }
-
-    /// 配置会话用于「只采集不外放」（避免回授）。
+    /// 一律使用 `.playAndRecord`：即使当前不外放（没有连接输出节点），
+    /// 扬声器也是静音的，同时又能满足硬件语音处理单元对 category 的要求。
     ///
-    /// 仍然使用 `.voiceChat` 模式以启用硬件语音处理。
-    static func configureForCaptureOnly(voiceChatMode: Bool = true) throws {
+    /// - Parameter voiceChatMode: 是否启用 `.voiceChat` 模式（硬件语音处理单位生效的前提）
+    static func configure(voiceChatMode: Bool = true) throws {
         let session = AVAudioSession.sharedInstance()
         let mode: AVAudioSession.Mode = voiceChatMode ? .voiceChat : .measurement
-        try session.setCategory(.record, mode: mode, options: [])
+        // 不用 .allowBluetoothA2DP：它和 .voiceChat 组合会改变路由行为，
+        // 而本项目不需要 A2DP 播放能力。
+        try session.setCategory(.playAndRecord, mode: mode, options: [.defaultToSpeaker])
         try session.setPreferredSampleRate(sampleRate)
         try session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true, options: .notifyOthersOnDeactivation)

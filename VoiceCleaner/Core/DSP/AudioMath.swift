@@ -12,8 +12,11 @@ enum AudioMath {
         return sign * (threshold + (1 - threshold) * sqrt(over))
     }
 
-    /// 直流偏置移除（一阶高通），返回新的状态滤波器。
-    static func makeDCBlocker(cutoffHz: Float, sampleRate: Float) -> (filter: (Float) -> Float) {
+    /// 直流偏置移除（一阶高通）。
+    ///
+    /// - Returns: 一个带内部状态的滤波闭包；返回 `(Float) -> Float`，
+    ///   注意**不能**写成 `(filter: (Float) -> Float)`——Swift 不允许带标签的单元素元组。
+    static func makeDCBlocker(cutoffHz: Float, sampleRate: Float) -> (Float) -> Float {
         let rc = 1.0 / (2.0 * Float.pi * cutoffHz)
         let dt = 1.0 / sampleRate
         let alpha = rc / (rc + dt)

@@ -43,7 +43,6 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let inputNode: AVAudioInputNode
     private var sourceNode: AVAudioSourceNode?
-    private var playerNode: AVAudioPlayerNode?
 
     /// 麦克风 → 处理线程
     private let inputBuffer: AudioRingBuffer
@@ -142,16 +141,7 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
         // 1) 配置音频会话
         //    硬件 VP 单元只在 .voiceChat 模式下生效
-        if mode == .silent || mode == .record {
-            try AudioSessionConfigurator.configureForCaptureOnly(
-                voiceChatMode: useHardwareVoiceProcessing
-            )
-        } else {
-            try AudioSessionConfigurator.configure(
-                allowBluetooth: false,
-                voiceChatMode: useHardwareVoiceProcessing
-            )
-        }
+        try AudioSessionConfigurator.configure(voiceChatMode: useHardwareVoiceProcessing)
 
         // 2) 确定实际输入格式
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -212,8 +202,6 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
         if let node = sourceNode { engine.detach(node) }
         sourceNode = nil
-        if let node = playerNode { engine.detach(node) }
-        playerNode = nil
 
         engine.stop()
         engine.reset()
@@ -351,8 +339,13 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
     // MARK: - 监控链
 
+    /// 建立外放链路：`AVAudioSourceNode`（从输出环形缓冲取数据）→ 主混音器 → 输出。
+    ///
+    /// 注意：`AVAudioPlayerNode` 是**源节点**（没有输入端），
+    /// 不能把 source node 接到 player node 上；直接连 `mainMixerNode` 才对。
+    /// 混音器和输出节点会以实时线程驱动 source node 的渲染回调。
     private func setupMonitorChain() {
-        let node = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
+        let node = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
             guard let self = self else { return noErr }
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             guard let first = ablPointer.first else { return noErr }
@@ -364,22 +357,16 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
             let samples = first.mData!.assumingMemoryBound(to: Float.self)
             let read = self.outputBuffer.read(into: samples, count: count)
             if read < count {
-                // 欠载：补零，避免爆音
+                // 欠载：补零。宁可出现极短的静音，也不能阻塞渲染线程。
                 for i in read..<count { samples[i] = 0 }
             }
             return noErr
         }
         sourceNode = node
         engine.attach(node)
-
-        let player = AVAudioPlayerNode()
-        playerNode = player
-        engine.attach(player)
-
-        engine.connect(node, to: player, format: format)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
-        player.play()
+        engine.connect(node, to: engine.mainMixerNode, format: format)
     }
+
 
     // MARK: - 录音
 

@@ -50,11 +50,9 @@ final class VoiceCleanerViewModel: ObservableObject {
     }
 
     var learningProgress: Double {
-        // 噪声学习阶段大致占整个学习帧数的前 40%
-        let total = Double(SpectralDenoiser.Configuration().noiseLearningFrames)
-        guard total > 0 else { return 0 }
-        let learned = Double(stats.noiseLearnCount * 0 + min(stats.processedFrames, Int(total)))
-        return min(learned / total, 1)
+        // 学习阶段的进度 = 已处理帧数 / 需要学习的帧数
+        let total = max(SpectralDenoiser.Configuration().noiseLearningFrames, 1)
+        return min(Double(stats.processedFrames) / Double(total), 1)
     }
 
     var statusText: String {

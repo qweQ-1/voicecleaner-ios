@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 主界面：状态卡 + 控制区 + 实时电平表。
 struct ContentView: View {

@@ -103,9 +103,20 @@ final class FFTTests: XCTestCase {
         XCTAssertEqual(timeEnergy, freqEnergy / Float(n), accuracy: 1e-2)
     }
 
-    /// 非法长度必须被拒绝，避免越界。
-    func testRejectsNonPowerOfTwoSize() {
-        // 无法直接测 precondition 崩溃，改为验证 FFT 构造函数对合法值可用
-        XCTAssertNoThrow(FFT(size: 512))
+    /// 合法尺寸可正常构造，且尺寸被如实记录。
+    ///
+    /// 非法尺寸（非 2 的幂）由 `precondition` 拦截并直接崩溃，
+    /// XCTest 里无法断言崩溃，所以这里只守住合法路径。
+    func testAcceptsPowerOfTwoSizes() {
+        for size in [64, 128, 512, 1024] {
+            let fft = FFT(size: size)
+            XCTAssertEqual(fft.size, size)
+            // 构造后应能立刻完成一次变换而不越界
+            var real = [Float](repeating: 0, count: size)
+            var imag = [Float](repeating: 0, count: size)
+            real[0] = 1
+            fft.transform(real: &real, imag: &imag, inverse: false)
+            XCTAssertEqual(real[0], 1, accuracy: 1e-5)
+        }
     }
 }
