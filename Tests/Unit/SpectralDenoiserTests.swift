@@ -281,3 +281,60 @@ final class SpectralDenoiserTests: XCTestCase {
         XCTAssertLessThanOrEqual(denoiser.config.spectralFloor, 1.0)
     }
 }
+
+// MARK: - 诊断（不参与断言）
+
+extension SpectralDenoiserTests {
+
+    /// 诊断测试：把直流场景下的分段均值与关键中间量打到 CI 日志里。
+    ///
+    /// 存在意义：本地（iSH）没有 Swift 工具链，只能靠 Python 复刻版预测。
+    /// 一旦预测与 CI 实际结果不一致，就需要这条通道看到 Swift 侧的真实内部状态。
+    /// 它不做任何断言，永远不会失败。
+    func testDiagnoseDCOffsetInternals() {
+        var cfg = SpectralDenoiser.Configuration()
+        cfg.sampleRate = 48_000
+        cfg.frameSize = 512
+        cfg.hopSize = 128
+        cfg.noiseLearningFrames = 20
+
+        let denoiser = SpectralDenoiser(configuration: cfg)
+        let hop = cfg.hopSize
+        let n = 4800
+        var input = [Float](repeating: 0.3, count: n)
+        for i in 0..<1000 { input[i] += Float(sin(Double(i) * 0.1)) * 0.2 }
+
+        var collected: [Float] = []
+        var offset = 0
+        while offset + hop <= n {
+            collected.append(contentsOf: denoiser.process(Array(input[offset..<(offset + hop)])))
+            offset += hop
+            if denoiser.processedFrames % 8 == 0, let p = denoiser.debugProbe(bin: 0) {
+                print(String(format: "[诊断] 帧 %3d  bin0  power=%.1f noise=%.1f gain=%.3f sGain=%.3f",
+                             denoiser.processedFrames, p.power, p.noise, p.gain, p.smoothedGain))
+            }
+        }
+        // 再冲刷 6 块（与 processBuffer 一致，用尾部回放）
+        for bi in 0..<6 {
+            var seg = [Float](repeating: 0, count: hop)
+            for i in 0..<hop {
+                let idx = ((bi * hop + i) % cfg.frameSize + cfg.frameSize) % cfg.frameSize
+                seg[i] = input[n - cfg.frameSize + idx]
+            }
+            collected.append(contentsOf: denoiser.process(seg))
+        }
+
+        let lag = cfg.frameSize - hop
+        let aligned = Array(collected[lag..<min(lag + n, collected.count)])
+        func mean(_ a: ArraySlice<Float>) -> Float {
+            a.isEmpty ? 0 : a.reduce(0, +) / Float(a.count)
+        }
+        let whole = mean(aligned[3000...])
+        let head = mean(aligned[3000..<min(4400, aligned.count)])
+        let tail = mean(aligned[min(4400, aligned.count)...])
+        // 断言本身与 testRemovesDCOffset 一致，但把分段数据放进失败消息：
+        // CI 日志里就能看到到底是"整段都压制不足"还是"只有尾部被污染"。
+        XCTAssertLessThan(abs(whole), 0.05,
+                          "[诊断] 长度=\(aligned.count) 全段=\(whole) 前段[3000,4400)=\(head) 尾段[4400:]=\(tail)")
+    }
+}

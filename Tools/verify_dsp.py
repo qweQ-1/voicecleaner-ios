@@ -234,9 +234,13 @@ class Denoiser:
             tail = np.zeros(HOP)
             tail[:n - off] = x[off:]
             blocks.append(self.process(tail))
-        # 冲刷
-        for _ in range(FRAME // HOP + 2):
-            blocks.append(self.process(np.zeros(HOP)))
+        # 冲刷流水线：用输入末尾的样本**回放**，不要用零块。
+        # 零块会让噪声估计迅速塌陷（最小值一路跟到 0），返回区间的最后
+        # frameSize-hopSize 个样本因此被"未压制"的信号污染。
+        tail_pad = x[-FRAME:] if n >= FRAME else np.concatenate([np.zeros(FRAME-n), x])
+        for bi in range(FRAME // HOP + 2):
+            idxs = (np.arange(bi * HOP, bi * HOP + HOP)) % len(tail_pad)
+            blocks.append(self.process(tail_pad[idxs]))
         concat = np.concatenate(blocks)
         lag = FRAME - HOP
         # 取 [lag, lag+n) 并对齐到输入时间轴

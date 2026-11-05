@@ -195,6 +195,15 @@ final class SpectralDenoiser {
         config = c.validated()
     }
 
+    /// 诊断用：返回指定频点在最近一帧的关键中间量。
+    ///
+    /// 仅用于单元测试与排查，不参与音频路径。加它是为了在 CI 日志里
+    /// 看到内部状态 —— iSH 本地没有 Swift 工具链，只能靠这条通道定位问题。
+    func debugProbe(bin: Int) -> (power: Float, noise: Float, gain: Float, smoothedGain: Float)? {
+        guard bin >= 0 && bin < binCount else { return nil }
+        return (powerBuf[bin], noiseProfile[bin], gain[bin], smoothedGain[bin])
+    }
+
     /// 噪声剖面的快照（供 UI 展示）
     func noiseProfileSnapshot() -> [Float] {
         noiseProfile
@@ -315,11 +324,22 @@ final class SpectralDenoiser {
             blocks.append(contentsOf: process(tail))
         }
 
-        // 冲刷流水线
+        // 冲刷流水线：用输入末尾的样本**回放**，不要用零块。
+        // 零块会让噪声估计迅速塌陷（最小值一路跟到 0），返回区间的最后
+        // frameSize-hopSize 个样本因此被「未压制」的信号污染。
+        var tailPad = [Float](repeating: 0, count: config.frameSize)
+        if input.count >= config.frameSize {
+            tailPad = Array(input[(input.count - config.frameSize)...])
+        } else {
+            for i in 0..<input.count { tailPad[config.frameSize - input.count + i] = input[i] }
+        }
         let flushBlocks = config.frameSize / hop + 2
-        let zeros = [Float](repeating: 0, count: hop)
-        for _ in 0..<flushBlocks {
-            blocks.append(contentsOf: process(zeros))
+        for blockIndex in 0..<flushBlocks {
+            var segment = [Float](repeating: 0, count: hop)
+            for i in 0..<hop {
+                segment[i] = tailPad[((blockIndex * hop + i) % config.frameSize + config.frameSize) % config.frameSize]
+            }
+            blocks.append(contentsOf: process(segment))
         }
 
         // 对齐
