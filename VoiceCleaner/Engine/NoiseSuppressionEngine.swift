@@ -15,17 +15,18 @@ import AVFoundation
 final class NoiseSuppressionEngine: @unchecked Sendable {
 
     enum OutputMode: String, CaseIterable {
-        /// 只处理不外放（避免回授），用于「给其他 App 用」的配合模式
-        case silent
-        /// 实时外放处理后的声音（用于试听效果）
+        /// 实时外放处理后的声音。**这是唯一能把降噪音频交给其他 App 的模式**：
+        /// 目标 App 的麦克风去拾取扬声器里干净的语音。
         case monitor
+        /// 只处理不外放，适合自己 Recording / 不做外放的场景
+        case silent
         /// 处理后的声音写入文件
         case record
 
         var displayName: String {
             switch self {
-            case .silent: return "静音（供其他 App 使用）"
-            case .monitor: return "实时监听"
+            case .monitor: return "实时外放（推荐）"
+            case .silent: return "静音处理"
             case .record: return "录制文件"
             }
         }
@@ -77,6 +78,13 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     private var isRunning = false
     /// 是否已安装采集 tap（无 tap 时调 removeTap 会告警）
     private var tapInstalled = false
+    /// 当前输出模式（决定是否把处理后的音频写进输出缓冲）
+    private var currentMode: OutputMode = .silent
+
+    // 音频流诊断：区分「tap 没被驱动」和「tap 有回调但处理没跑」
+    private var inputCallbackCount = 0
+    private var didReportAudioFlow = false
+    private var processingStartedAt: Date?
 
     // MARK: - 录制
 
@@ -274,8 +282,12 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         // 所以无论哪种模式都把 source node 接到主混音器，
         // 静音模式用 outputVolume = 0 保证不外放（避免回授）。
         setupOutputChain()
-        engine.mainMixerNode.outputVolume = (mode == .monitor) ? 1.0 : 0.0
-        log.record("音频图", "source → mainMixer，外放音量 \(mode == .monitor ? "开" : "关")")
+        // 混音器恒定满音量：静音不靠 outputVolume=0，而是**不往输出缓冲写数据**。
+        // 这样渲染链始终被完整驱动，输入 tap 一定会被拉流；
+        // 用 outputVolume=0 静音则有被优化掉、导致输入侧不跑的风险。
+        engine.mainMixerNode.outputVolume = 1.0
+        currentMode = mode
+        log.record("音频图", "source → mainMixer（完整链路），输出 \(mode == .monitor ? "外放" : "静音")")
 
         // ---- 8) 引擎 ----
         engine.prepare()
@@ -287,6 +299,9 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         }
         log.record("引擎", "已启动，外放 \(mode == .monitor ? "开" : "静音")")
 
+        processingStartedAt = Date()
+        didReportAudioFlow = false
+        inputCallbackCount = 0
         startProcessingTimer()
     }
 
@@ -387,6 +402,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         guard let channelData = buffer.floatChannelData?.pointee else { return }
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
+        // 诊断计数：用来区分「tap 完全没被驱动」和「有回调但处理没跑起来」
+        inputCallbackCount += 1
         inputBuffer.write(channelData, count: count)
     }
 
@@ -407,6 +424,7 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     }
 
     private func processAvailableAudio() {
+        reportAudioFlowIfNeeded()
         let hop = denoiserConfig.hopSize
 
         while inputBuffer.availableToRead >= hop {
@@ -417,8 +435,10 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
             let output = denoiser.process(workBuffer)
             processedBuffer = output
 
-            // 送入输出环形缓冲
-            outputBuffer.write(processedBuffer)
+            // 只有监听模式才把处理后的音频送进输出缓冲（其余模式静音）
+            if currentMode == .monitor {
+                outputBuffer.write(processedBuffer)
+            }
 
             // 录音模式：写文件
             if audioFile != nil {
@@ -449,6 +469,29 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
         if !denoiser.isLearningNoise && state == .learningNoise {
             setState(.running)
+        }
+    }
+
+    /// 把「音频到底有没有在流」这件事记进**用户看得见的日志**。
+    ///
+    /// 必要性：引擎启动成功却收不到音频时，界面表现和"启动失败"一模一样——
+    /// 都是点了没反应。只有把结论写进诊断日志，用户截图才能定位。
+    private func reportAudioFlowIfNeeded() {
+        guard !didReportAudioFlow else { return }
+
+        if denoiser.processedFrames > 0 {
+            didReportAudioFlow = true
+            log.record("音频流", "已处理首帧（采集回调 \(inputCallbackCount) 次）")
+            return
+        }
+
+        guard let started = processingStartedAt,
+              Date().timeIntervalSince(started) > 2 else { return }
+        didReportAudioFlow = true
+        if inputCallbackCount == 0 {
+            log.failure("音频流", "2 秒内采集 tap 一次都没触发（回调 0 次）——麦克风没有被拉流")
+        } else {
+            log.failure("音频流", "采集回调 \(inputCallbackCount) 次，但始终凑不满一帧")
         }
     }
 

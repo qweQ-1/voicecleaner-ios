@@ -24,7 +24,9 @@ enum AudioRoute: String {
 final class VoiceCleanerViewModel: ObservableObject {
     @Published private(set) var state: NoiseSuppressionEngine.State = .idle
     @Published private(set) var stats = EngineStats()
-    @Published var mode: NoiseSuppressionEngine.OutputMode = .silent
+    /// 默认用实时外放：这是唯一能把降噪音频「交给别的 App」的模式，
+    /// 静音模式只处理不外放，用户点了会觉得「没反应」。
+    @Published var mode: NoiseSuppressionEngine.OutputMode = .monitor
     @Published var strength: Float = 0.5
     @Published private(set) var noiseProfile: [Float] = []
     @Published private(set) var route: AudioRoute = .speakerRelay
@@ -51,6 +53,41 @@ final class VoiceCleanerViewModel: ObservableObject {
     private let engine = NoiseSuppressionEngine()
     private var statsTimer: Timer?
     private var profileTimer: Timer?
+    private var stopObserver: NSObjectProtocol?
+
+    init() {
+        // **状态用推送，不用轮询。**
+        // 轮询一旦没跑起来（视图生命周期提前触发 onDisappear、run loop 切到
+        // tracking 模式等），界面就永远停在「开始降噪」：用户点了没反应，
+        // 其实引擎已经启动成功——这次线上反馈踩的就是这个坑。
+        engine.onStateChange = { [weak self] newState in
+            self?.state = newState
+        }
+
+        // 统计定时器在 init 里就启动，不依赖任何视图生命周期回调
+        startStatsTimer()
+
+        // 退到后台时释放麦克风（系统本来也不允许后台录音）
+        stopObserver = NotificationCenter.default.addObserver(
+            forName: .voiceCleanerShouldStop,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.isRunning else { return }
+            self.engine.stop()
+            self.stopProfileTimer()
+            self.noAudioDetected = false
+            self.runningSince = nil
+        }
+    }
+
+    deinit {
+        statsTimer?.invalidate()
+        profileTimer?.invalidate()
+        if let observer = stopObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     var isRunning: Bool {
         switch state {
@@ -94,12 +131,11 @@ final class VoiceCleanerViewModel: ObservableObject {
         if !hasMicrophonePermission {
             hasMicrophonePermission = await AudioSessionConfigurator.requestMicrophonePermission()
         }
-        startStatsTimer()
     }
 
+    /// 彻底停止并释放（视图消失时不再调用它——那会把统计定时器一起弄死，
+    /// 界面从此不再刷新。退到后台的释放走通知观察者。）
     func shutdown() {
-        statsTimer?.invalidate()
-        statsTimer = nil
         profileTimer?.invalidate()
         profileTimer = nil
         engine.stop()
@@ -122,6 +158,8 @@ final class VoiceCleanerViewModel: ObservableObject {
             try engine.start(mode: mode, useHardwareVoiceProcessing: useHardwareVoiceProcessing)
             startupFailure = nil
             didFallBack = engine.hardwareVoiceProcessingFallback
+            // 立即同步状态：即便引擎回调有任何延迟，按钮也必须马上变成「停止」
+            state = .learningNoise
             runningSince = Date()
             noAudioDetected = false
             engine.setStrength(strength)
@@ -169,7 +207,9 @@ final class VoiceCleanerViewModel: ObservableObject {
 
     private func startStatsTimer() {
         statsTimer?.invalidate()
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // 用 .common 模式：scheduledTimer 默认只在 .default 模式跑，
+        // 用户按住/拖动滚动视图时 run loop 切到 .tracking，定时器会暂停。
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let newStats = self.engine.stats
             self.stats = newStats
@@ -186,14 +226,18 @@ final class VoiceCleanerViewModel: ObservableObject {
                 }
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        statsTimer = timer
     }
 
     private func startProfileTimer() {
         profileTimer?.invalidate()
-        profileTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.noiseProfile = self.engine.noiseProfileSnapshot()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        profileTimer = timer
     }
 
     private func stopProfileTimer() {

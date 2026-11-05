@@ -30,9 +30,9 @@ struct ContentView: View {
         .task {
             await viewModel.bootstrap()
         }
-        .onDisappear {
-            viewModel.shutdown()
-        }
+        // 注意：这里**不要**在 onDisappear 里调 shutdown()。
+        // 视图消失会把引擎和统计定时器一起停掉，表现为「点了没反应」。
+        // 退到后台的释放交给 VoiceCleanerViewModel 里的通知观察者。
     }
 
     // MARK: - 启动失败卡片
@@ -251,10 +251,10 @@ struct ContentView: View {
 
     private var modeDescription: String {
         switch viewModel.mode {
-        case .silent:
-            return "只采集和降噪，不外放。用于配合「外放接管」方案：开启后用扬声器播放处理后的声音。"
         case .monitor:
-            return "实时外放降噪后的声音，用耳机听效果。注意外放时会串到其他 App 的麦克风。"
+            return "降噪后的语音从扬声器放出，目标 App 的麦克风去拾取——这样别的 App 就能用上干净语音（外放太小会拾取不到）。"
+        case .silent:
+            return "只处理不外放，听不到声音是正常的。适合只想降噪、不需要传给别的 App 的场景。"
         case .record:
             return "把降噪后的音频写成 WAV 文件。"
         }
@@ -313,8 +313,17 @@ struct ContentView: View {
             Text("展示学习到的噪声频谱分布，峰值越高说明该频段背景噪音越强。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            NoiseProfileView(profile: viewModel.noiseProfile)
-                .frame(height: 90)
+            if viewModel.noiseProfile.isEmpty {
+                Text(viewModel.isRunning
+                     ? "等待音频数据…若一直空着，展开下面的「启动诊断」看「音频流」一行。"
+                     : "点「开始降噪」后这里会画出学习到的噪声频谱。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 90)
+            } else {
+                NoiseProfileView(profile: viewModel.noiseProfile)
+                    .frame(height: 90)
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
