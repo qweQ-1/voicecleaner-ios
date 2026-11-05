@@ -1,0 +1,70 @@
+# 打一个不签名的 IPA，供 AltStore / Sideloadly / 轻松签 等工具用免费 Apple ID 自签安装。
+# 触发：手动运行（Actions → Unsigned IPA → Run workflow）。
+name: Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26.6
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.6'
+
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fLsS https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip -o "$RUNNER_TEMP/xcodegen.zip"
+          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -oq "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate project
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen --version
+          xcodegen generate
+
+      - name: Archive without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild archive -project VoiceCleaner.xcodeproj -scheme VoiceCleaner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/VoiceCleaner.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            2>&1 | tail -40
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find build/VoiceCleaner.xcarchive/Products/Applications -maxdepth 1 -name '*.app' -type d -print -quit)
+          echo "app: $APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          codesign --force --sign - "dist/Payload/$(basename "$APP")" || true
+          (cd dist && zip -qry VoiceCleaner-unsigned.ipa Payload)
+          shasum -a 256 dist/VoiceCleaner-unsigned.ipa
+          ls -lh dist/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: voicecleaner-unsigned-ipa
+          path: dist/VoiceCleaner-unsigned.ipa

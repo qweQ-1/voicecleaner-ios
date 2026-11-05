@@ -1,0 +1,87 @@
+name: VoiceCleaner
+options:
+  bundleIdPrefix: com.qweq-1
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  VoiceCleaner:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: VoiceCleaner
+    info:
+      path: VoiceCleaner/Info.plist
+      properties:
+        CFBundleDisplayName: "净声"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiredDeviceCapabilities:
+          - arm64
+        ITSAppUsesNonExemptEncryption: false
+        CADisableMinimumFrameDurationOnPhone: true
+        NSMicrophoneUsageDescription: "需要使用麦克风采集环境声音，以便实时降噪并把处理后的干净语音提供给其他应用。"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.qweq-1.voicecleaner
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: VoiceCleaner/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: "YES"
+        MTL_FAST_MATH: "YES"
+        SWIFT_STRICT_CONCURRENCY: minimal
+
+  VoiceCleanerTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/Unit
+    dependencies:
+      - target: VoiceCleaner
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.qweq-1.voicecleaner.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/VoiceCleaner.app/VoiceCleaner"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  VoiceCleaner:
+    build:
+      targets:
+        VoiceCleaner: all
+        VoiceCleanerTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - VoiceCleanerTests
+      testPlans:
+        - path: Fast.xctestplan
+          defaultPlan: true
+        - path: Full.xctestplan

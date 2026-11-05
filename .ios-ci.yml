@@ -1,0 +1,25 @@
+# VoiceCleaner 的 CI 配置：所有工作流都从这里读设置，入口文件里只剩 uses: 和 secrets:。
+# 完整说明见 ios-ci-workflows 的 docs/config.md。
+
+# 工程（必填：project、scheme、bundle_id）
+workdir: .
+project: VoiceCleaner.xcodeproj
+scheme: VoiceCleaner
+bundle_id: com.qweq-1.voicecleaner
+display_name: '净声'
+generate_command: xcodegen generate && python3 Scripts/sync-test-plans.py
+
+# 工具链：显式固定
+toolchain:
+  xcode: '26.6'
+  simulator: iPhone 17 Pro
+  ios: '26.4'
+
+build_test:
+  fast_test_plan: Fast
+  full_test_plan: Full
+  accessibility_audit: warn
+
+testflight:
+  entitlement_mode: none
+  acceptance_issue: true

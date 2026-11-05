@@ -1,0 +1,28 @@
+{
+  "configurations": [
+    {
+      "id": "1F0E8C4A-3B2D-4E6F-9A1B-7C5D3E2F1A00",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "systemAttachmentLifetime": "deleteOnSuccess",
+    "userAttachmentLifetime": "deleteOnSuccess",
+    "targetForVariableExpansion": {
+      "containerPath": "container:VoiceCleaner.xcodeproj",
+      "identifier": "000000000000000000000000",
+      "name": "VoiceCleaner"
+    }
+  },
+  "testTargets": [
+    {
+      "target": {
+        "containerPath": "container:VoiceCleaner.xcodeproj",
+        "identifier": "000000000000000000000000",
+        "name": "VoiceCleanerTests"
+      }
+    }
+  ],
+  "version": 1
+}
