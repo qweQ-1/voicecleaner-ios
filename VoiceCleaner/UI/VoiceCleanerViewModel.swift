@@ -4,17 +4,16 @@ import Combine
 
 /// 音频接管路线。
 ///
-/// - `systemDriver`：系统级虚拟麦克风（DriverKit 音频驱动扩展）。
-///   若扩展已安装并被系统接受，可直接在其他 App 的麦克风列表里选中。
-/// - `speakerRelay`：外放接管。降噪后的音频从扬声器播放，
-///   由目标 App 的麦克风拾取。兼容性最好，但受房间声学影响。
-enum AudioRoute: String, CaseIterable {
-    case systemDriver
+/// iPhone 上**没有**系统级虚拟麦克风：Apple 的 AudioDriverKit 官方只支持
+/// macOS 和 M 芯片 iPadOS，且需要单独向 Apple 申请 `com.apple.developer.driverkit` 权限。
+/// 因此 iOS 上唯一能落地的路线是「外放接管」——
+/// 降噪后的音频从扬声器播放，由目标 App 的麦克风拾取。
+enum AudioRoute: String {
+    /// 外放接管：降噪后从扬声器播放，目标 App 拾取
     case speakerRelay
 
     var displayName: String {
         switch self {
-        case .systemDriver: return "系统驱动"
         case .speakerRelay: return "外放接管"
         }
     }
@@ -29,6 +28,7 @@ final class VoiceCleanerViewModel: ObservableObject {
     @Published private(set) var noiseProfile: [Float] = []
     @Published private(set) var route: AudioRoute = .speakerRelay
     @Published private(set) var hasMicrophonePermission = false
+    /// 是否启用 Apple 硬件语音处理单元（AEC + AGC + 硬件降噪）
     /// 是否启用 Apple 硬件语音处理单元（AEC + AGC + 硬件降噪）
     @Published var useHardwareVoiceProcessing = true
 

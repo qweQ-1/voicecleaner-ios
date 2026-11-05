@@ -36,8 +36,6 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        UIRequiredDeviceCapabilities:
-          - arm64
         ITSAppUsesNonExemptEncryption: false
         CADisableMinimumFrameDurationOnPhone: true
         NSMicrophoneUsageDescription: "需要使用麦克风采集环境声音，以便实时降噪并把处理后的干净语音提供给其他应用。"

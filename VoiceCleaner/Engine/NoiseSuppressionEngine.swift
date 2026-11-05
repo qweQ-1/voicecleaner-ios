@@ -67,6 +67,15 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     private var _stats = EngineStats()
     private let statsLock = NSLock()
 
+    /// 噪声剖面快照锁（降噪器在处理线程写，主线程读）
+    private let profileLock = NSLock()
+    private var _noiseProfileSnapshot: [Float] = []
+
+    /// 实际生效的音频格式
+    private var format: AVAudioFormat
+    /// 是否正在运行
+    private var isRunning = false
+
     // MARK: - 录制
 
     private var audioFile: AVAudioFile?
@@ -130,6 +139,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         profileLock.lock(); defer { profileLock.unlock() }
         return _noiseProfileSnapshot
     }
+
+
 
     // MARK: - 控制
 
@@ -206,9 +217,7 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         engine.stop()
         engine.reset()
 
-        if let file = audioFile {
-            try? file.close()
-        }
+        // AVAudioFile.close() 需要 iOS 18+；置空后由 deinit 负责关闭
         audioFile = nil
 
         AudioSessionConfigurator.deactivate()
@@ -315,6 +324,12 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
             // 回调
             onProcessedAudio?(makePCMBuffer(from: processedBuffer))
 
+
+            let snapshot = self.denoiser.noiseProfileSnapshot()
+            self.profileLock.lock()
+            self._noiseProfileSnapshot = snapshot
+            self.profileLock.unlock()
+
             updateStats { stats in
                 stats.processedFrames += 1
                 stats.inputLevel = AudioMath.rms(workBuffer[0..<hop])
@@ -326,10 +341,6 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
             }
 
             // 刷新噪声剖面快照（供 UI 展示）
-            let snapshot = self.denoiser.noiseProfileSnapshot()
-            self.profileLock.lock()
-            self._noiseProfileSnapshot = snapshot
-            self.profileLock.unlock()
         }
 
         if !denoiser.isLearningNoise && state == .learningNoise {
@@ -386,7 +397,6 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     }
 
     func stopRecording() -> URL? {
-        try? audioFile?.close()
         audioFile = nil
         return recordingURL
     }
