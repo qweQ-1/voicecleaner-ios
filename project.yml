@@ -84,4 +84,3 @@ schemes:
       testPlans:
         - path: Fast.xctestplan
           defaultPlan: true
-        - path: Full.xctestplan
