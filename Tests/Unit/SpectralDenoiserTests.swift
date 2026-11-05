@@ -147,6 +147,93 @@ final class SpectralDenoiserTests: XCTestCase {
         XCTAssertEqual(denoiser.processedFrames, 0)
     }
 
+    /// **时序回归测试**：把增益强制为 1，整条 STFT 链路必须逐点重建原信号。
+    ///
+    /// 这是整个降噪器最关键的测试。重叠相加的索引只要错一位，
+    /// 实时表现就是「延迟」或「回声」，离线表现是「重建误差巨大」，
+    /// 而在噪声段测 RMS 时这种错位往往**不会**被发现。
+    ///
+    /// 把 `spectralFloor` 设为 1.0（增益下限拉到 1）、`gainSmoothing` 设为 0
+    /// （不做时间平滑），Wiener 增益就会被 max(g, 1.0) 抬到恒等于 1，
+    /// 于是输出应当逐点等于输入。
+    func testPerfectReconstructionWithUnityGain() {
+        var cfg = SpectralDenoiser.Configuration()
+        cfg.sampleRate = 48_000
+        cfg.frameSize = 512
+        cfg.hopSize = 128
+        cfg.spectralFloor = 1.0      // 增益下限 = 1 → 恒等
+        cfg.gainSmoothing = 0.0      // 不做时间平滑
+        cfg.noiseLearningFrames = 5
+
+        let denoiser = SpectralDenoiser(configuration: cfg)
+
+        // 用双音信号，便于发现相位/错位问题
+        let n = 24_000
+        var input = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            let t = Double(i) / 48_000
+            input[i] = Float(0.4 * sin(2 * .pi * 440 * t) + 0.2 * sin(2 * .pi * 1330 * t))
+        }
+
+        let output = denoiser.processBuffer(input)
+
+        XCTAssertEqual(output.count, input.count, "输出长度必须与输入一致")
+
+        var maxError: Float = 0
+        for i in 0..<n {
+            maxError = max(maxError, abs(output[i] - input[i]))
+        }
+        XCTAssertLessThan(maxError, 1e-3,
+                          "恒等增益下必须逐点重建，实际最大误差 \(maxError)")
+
+        // 相对信号幅度而言，误差必须小到可忽略
+        let signalPeak = AudioMath.peak(input[0..<n])
+        XCTAssertLessThan(maxError / signalPeak, 1e-3,
+                          "相对误差应小于千分之一")
+    }
+
+    /// 输出不能整体错位（延迟/超前）。
+    func testOutputIsTimeAlignedWithInput() {
+        var cfg = SpectralDenoiser.Configuration()
+        cfg.frameSize = 512
+        cfg.hopSize = 128
+        cfg.spectralFloor = 1.0
+        cfg.gainSmoothing = 0.0
+        cfg.noiseLearningFrames = 5
+
+        let denoiser = SpectralDenoiser(configuration: cfg)
+        let n = 16_000
+        var input = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            let t = Double(i) / 48_000
+            input[i] = Float(0.5 * sin(2 * .pi * 700 * t))
+        }
+        let output = denoiser.processBuffer(input)
+
+        // 直接逐点比较：如果能对上，说明零延迟、零超前
+        var directError: Float = 0
+        for i in 1000..<(n - 1000) {
+            directError += abs(output[i] - input[i])
+        }
+        directError /= Float(n - 2000)
+
+        // 与人为平移若干点的误差对比：直接对齐必须是最小的
+        for shift in [1, 4, 16, -1, -4, -16] {
+            var shiftedError: Float = 0
+            var count = 0
+            for i in 1000..<(n - 1000) {
+                let j = i + shift
+                if j >= 0 && j < n {
+                    shiftedError += abs(output[i] - input[j])
+                    count += 1
+                }
+            }
+            shiftedError /= Float(max(count, 1))
+            XCTAssertLessThan(directError, shiftedError,
+                              "输出不应相对输入偏移 \(shift) 个样本")
+        }
+    }
+
     /// 非法配置应被纠正为安全值，而不是崩溃。
     func testInvalidConfigurationIsSanitized() {
         var cfg = SpectralDenoiser.Configuration()

@@ -270,24 +270,44 @@ final class SpectralDenoiser {
 
     /// 便捷入口：整段处理（离线分析 / 单元测试用）。
     ///
-    /// 尾部不足一帧的部分补零处理，输出长度与输入等长。
+    /// 返回结果与输入**等长且时间轴对齐**，为此做了两件事：
+    /// 1. **冲刷流水线**：STFT 有 `frameSize - hopSize` 个样本的前视，
+    ///    末尾要再喂几个零块，才能把最后一段音频吐出来。
+    /// 2. **对齐**：第 m 步输出的是 `[m*hop - frameSize, m*hop - frameSize + hop)`
+    ///    这一段，比当时已消费的输入滞后 `frameSize - hopSize` 个样本，
+    ///    所以拼接结果要整体后移这么多。
+    ///
+    /// 这两点漏掉的话，实时听感是「延迟/回声」，离线测出来是「重建误差巨大」。
     func processBuffer(_ input: [Float]) -> [Float] {
         let hop = config.hopSize
-        var output = [Float]()
-        output.reserveCapacity(input.count)
+        let lag = config.frameSize - hop
+        var blocks: [Float] = []
+        blocks.reserveCapacity(input.count + config.frameSize * 2)
+
         var offset = 0
         while offset + hop <= input.count {
             let chunk = Array(input[offset..<(offset + hop)])
-            output.append(contentsOf: process(chunk))
+            blocks.append(contentsOf: process(chunk))
             offset += hop
         }
         if offset < input.count {
             var tail = [Float](repeating: 0, count: hop)
             let remaining = input.count - offset
             for i in 0..<remaining { tail[i] = input[offset + i] }
-            output.append(contentsOf: process(tail))
+            blocks.append(contentsOf: process(tail))
         }
-        return output
+
+        // 冲刷流水线
+        let flushBlocks = config.frameSize / hop + 2
+        let zeros = [Float](repeating: 0, count: hop)
+        for _ in 0..<flushBlocks {
+            blocks.append(contentsOf: process(zeros))
+        }
+
+        // 对齐
+        guard blocks.count > lag else { return blocks }
+        let end = min(lag + input.count, blocks.count)
+        return Array(blocks[lag..<end])
     }
 
     // MARK: - 噪声估计
