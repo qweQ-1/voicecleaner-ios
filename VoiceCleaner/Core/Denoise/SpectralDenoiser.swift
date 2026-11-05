@@ -257,6 +257,11 @@ final class SpectralDenoiser {
         computeGain()
 
         // ---- 8) 施加增益 ----
+        // **必须同时给负频率半边施加镜像增益**，否则频谱不再是共轭对称的，
+        // 逆变换取实部等价于把增益平均成 (g+1)/2 —— 降噪量直接减半。
+        // 症状：纯音只被压到 54%，正好等于 (谱底 0.08 + 1) / 2。
+        // （Python 复刻版用 np.fft.irfft，它会自动由半谱补全对称性，
+        //   所以这个 bug 在 Python 侧不会出现，只有对着 Swift 的实际测试才发现。）
         for k in 0..<binCount {
             let g = smoothedGain[k]
             realBuf[k] *= g
@@ -265,6 +270,13 @@ final class SpectralDenoiser {
             previousEnhancedPower[k] = g * g * powerBuf[k]
             previousPower[k] = powerBuf[k]
             previousGain[k] = gain[k]
+        }
+        // 负频率半边：增益取镜像频点（N-k）的值
+        for k in binCount..<n {
+            let mirror = n - k
+            let g = smoothedGain[mirror]
+            realBuf[k] *= g
+            imagBuf[k] *= g
         }
 
         // ---- 9) 逆 FFT ----
