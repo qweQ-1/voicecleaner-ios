@@ -402,7 +402,8 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     }
 
     private func writeToFile(_ samples: [Float]) {
-        guard let file = audioFile, let format = format else { return }
+        // 注意：format 是非可选属性，不能写成 guard let format = format
+        guard let file = audioFile else { return }
         let frameCount = AVAudioFrameCount(samples.count)
         guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
         pcm.frameLength = frameCount
