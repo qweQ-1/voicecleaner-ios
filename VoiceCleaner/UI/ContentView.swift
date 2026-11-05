@@ -9,6 +9,9 @@ struct ContentView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 16) {
+                    if let failure = viewModel.startupFailure {
+                        failureCard(failure)
+                    }
                     statusCard
                     levelMeter
                     controls
@@ -16,6 +19,7 @@ struct ContentView: View {
                     strengthSlider
                     hardwareCard
                     noiseProfileCard
+                    diagnosticsCard
                     instructionsCard
                 }
                 .padding()
@@ -29,6 +33,60 @@ struct ContentView: View {
         .onDisappear {
             viewModel.shutdown()
         }
+    }
+
+    // MARK: - 启动失败卡片
+
+    /// 启动失败时**必须**留在界面上：早先的错误信息会被轮询定时器冲掉，
+    /// 用户看到的就是"点了没反应"。这里单独渲染，不随状态轮询消失。
+    private func failureCard(_ failure: AudioStartupAdvice.Advice) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(failure.title)
+                    .font(.subheadline.bold())
+                Spacer()
+                Button {
+                    viewModel.dismissFailure()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text(failure.suggestion)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button("打开系统设置") { viewModel.openSystemSettings() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("重新授权") {
+                    Task { await viewModel.refreshPermission() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button("重试") { viewModel.toggle() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+        }
+        .padding()
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    // MARK: - 诊断面板
+
+    private var diagnosticsCard: some View {
+        DiagnosticsPanel(log: viewModel.diagnosticLog)
     }
 
     // MARK: - 状态卡
@@ -61,6 +119,24 @@ struct ContentView: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+
+            if viewModel.noAudioDetected {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("引擎已启动，但 2 秒内没收到麦克风数据")
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                    Text("展开下面的「启动诊断」看每一步结果。常见原因：麦克风被其他 App 占用、或系统权限刚被改动。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if viewModel.didFallBack {
+                Text("本机不支持硬件语音处理，已自动降级为纯软件降噪")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding()
@@ -316,4 +392,52 @@ struct NoiseProfileView: View {
 
 #Preview {
     ContentView()
+}
+
+/// 启动诊断面板。
+///
+/// 单独做成子视图是因为需要 `@ObservedObject`：
+/// `viewModel.diagnosticLog` 是计算属性，SwiftUI 不会替我们订阅它的变化，
+/// 写在父视图里日志会「不刷新」。
+struct DiagnosticsPanel: View {
+    @ObservedObject var log: DiagnosticLog
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if log.entries.isEmpty {
+                    Text("还没有启动记录。点「开始降噪」后会记录每一步的结果。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(log.entries) { entry in
+                        Text(entry.line)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(entry.isFailure ? Color.red : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Button {
+                        UIPasteboard.general.string = log.report
+                    } label: {
+                        Label("复制诊断信息", systemImage: "doc.on.doc")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack {
+                Text("启动诊断").font(.subheadline.bold())
+                if log.hasFailure {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                }
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+    }
 }

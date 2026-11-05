@@ -75,11 +75,16 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     private var format: AVAudioFormat
     /// 是否正在运行
     private var isRunning = false
+    /// 是否已安装采集 tap（无 tap 时调 removeTap 会告警）
+    private var tapInstalled = false
 
     // MARK: - 录制
 
     private var audioFile: AVAudioFile?
     private var recordingURL: URL?
+
+    /// 启动诊断日志（展示在界面上，便于定位「点了没反应」这类问题）
+    let log = DiagnosticLog()
 
     /// 降噪后音频的输出回调（可用于写入文件 / 推流）
     var onProcessedAudio: ((AVAudioPCMBuffer) -> Void)?
@@ -146,33 +151,105 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
     // MARK: - 控制
 
     /// 启动引擎。
-    /// - Parameter mode: 输出模式
-    /// - Parameter useHardwareVoiceProcessing: 是否启用 Apple 硬件语音处理单元
+    ///
+    /// 分步执行并记录到 `log`；任何一步失败都会抛出具名错误，
+    /// 同时尝试**自动降级**（关掉硬件语音处理）再启动一次——
+    /// 那条链路在部分机型/外接设备组合下会失败，但不该让整个 App 不可用。
+    ///
+    /// - Parameters:
+    ///   - mode: 输出模式
+    ///   - useHardwareVoiceProcessing: 是否启用 Apple 硬件语音处理单元
     func start(mode: OutputMode, useHardwareVoiceProcessing: Bool = true) throws {
         guard !isRunning else { return }
+        log.clear()
+        log.record("开始启动", "模式=\(mode.rawValue)，硬件语音处理=\(useHardwareVoiceProcessing ? "开" : "关")")
 
-        // 1) 配置音频会话
-        //    硬件 VP 单元只在 .voiceChat 模式下生效
-        try AudioSessionConfigurator.configure(voiceChatMode: useHardwareVoiceProcessing)
+        do {
+            try attemptStart(mode: mode, useHardwareVoiceProcessing: useHardwareVoiceProcessing)
+            log.record("启动完成", "采样率 \(Int(format.sampleRate)) Hz，帧长 \(denoiserConfig.frameSize)，跳 \(denoiserConfig.hopSize)")
+        } catch let firstError {
+            log.failure("首次启动失败", "\(firstError.localizedDescription)")
+            teardown()
 
-        // 2) 确定实际输入格式
-        let inputFormat = inputNode.inputFormat(forBus: 0)
+            // 自动降级：关掉硬件语音处理（最容易在特定机型上失败的一环）再试一次
+            guard useHardwareVoiceProcessing else {
+                hardwareVoiceProcessingFallback = false
+                setState(.failed(firstError.localizedDescription))
+                throw firstError
+            }
+            log.record("自动降级", "关闭硬件语音处理后重试")
+            do {
+                try attemptStart(mode: mode, useHardwareVoiceProcessing: false)
+                hardwareVoiceProcessingFallback = true
+                log.record("降级启动成功", "音质会略降，但功能可用")
+            } catch let secondError {
+                log.failure("降级启动也失败", "\(secondError.localizedDescription)")
+                teardown()
+                setState(.failed(secondError.localizedDescription))
+                throw secondError
+            }
+        }
+
+        isRunning = true
+        setState(.learningNoise)
+    }
+
+    /// 单次启动尝试：会话 → 输入格式 → 硬件处理 → 音频图 → tap → 引擎。
+    private func attemptStart(mode: OutputMode, useHardwareVoiceProcessing: Bool) throws {
+
+        // ---- 1) 麦克风权限 ----
+        // 没有权限时系统的输入格式会是 0 Hz，继续走下去只会得到一个
+        // 语焉不详的底层错误。在这里提前失败，给出可执行的建议。
+        guard AudioSessionConfigurator.permissionGranted else {
+            log.failure("麦克风权限", "未授权")
+            throw EngineStartupError.microphonePermissionDenied
+        }
+        log.record("麦克风权限", "已授权")
+
+        // ---- 2) 音频会话 ----
+        do {
+            try AudioSessionConfigurator.configure(voiceChatMode: useHardwareVoiceProcessing)
+        } catch {
+            log.failure("音频会话", "\(error.localizedDescription)")
+            throw EngineStartupError.sessionConfigurationFailed(error.localizedDescription)
+        }
+        let session = AVAudioSession.sharedInstance()
+        log.record("音频会话", "\(session.category.rawValue) / \(session.mode.rawValue)，"
+                  + "采样率 \(Int(session.sampleRate)) Hz，缓冲 \(String(format: "%.1f", session.ioBufferDuration * 1000)) ms")
+
+        // ---- 3) 输入格式 ----
+        // 会话刚激活时输入格式偶尔还是 0；重新激活一次再读。
+        var inputFormat = inputNode.inputFormat(forBus: 0)
+        if inputFormat.sampleRate <= 0 || inputFormat.channelCount == 0 {
+            log.record("输入格式异常", "\(inputFormat.sampleRate) Hz / \(inputFormat.channelCount) 声道，重新激活会话")
+            try? session.setActive(false)
+            try? session.setActive(true)
+            inputFormat = inputNode.inputFormat(forBus: 0)
+        }
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            setState(.failed("麦克风不可用"))
-            throw NSError(domain: "VoiceCleaner", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "麦克风不可用，请检查权限"])
+            log.failure("输入格式", "仍为 \(inputFormat.sampleRate) Hz / \(inputFormat.channelCount) 声道")
+            throw EngineStartupError.inputUnavailable(
+                "格式 \(inputFormat.sampleRate) Hz / \(inputFormat.channelCount) 声道")
         }
         format = inputFormat
+        log.record("输入格式", "\(Int(inputFormat.sampleRate)) Hz，\(inputFormat.channelCount) 声道")
 
-        // 3) 启用 Apple 硬件语音处理单元（AEC + AGC + 硬件降噪）
-        //    必须在 installTap 之前调用，否则不生效。
-        //    这是效果好坏的最大变量：硬件 DSP 的效果远好于纯软件算法，
-        //    而且几乎不占 CPU。我们把它的输出再喂给自研 STFT 降噪做二次处理。
+        // ---- 4) 硬件语音处理单元（AEC + AGC + 硬件降噪）----
+        // 必须在 installTap 之前调用；只在 .voiceChat 模式下生效。
         if useHardwareVoiceProcessing {
             enableHardwareVoiceProcessing()
+            if isHardwareVoiceProcessingEnabled {
+                log.record("硬件语音处理", "已启用")
+            } else {
+                // 不致命：纯软件降噪仍然可用
+                log.record("硬件语音处理", "本机不支持，已跳过（用纯软件降噪）")
+            }
+        } else {
+            hardwareFallbackReason = "用户关闭或已降级"
+            log.record("硬件语音处理", "未启用")
         }
 
-        // 4) 重新配置降噪器以匹配实际采样率
+        // ---- 5) 降噪器按实际采样率重建 ----
         var cfg = denoiserConfig
         cfg.sampleRate = Float(inputFormat.sampleRate)
         denoiserConfig = cfg.validated()
@@ -180,47 +257,72 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         workBuffer = [Float](repeating: 0, count: denoiserConfig.hopSize)
         processedBuffer = [Float](repeating: 0, count: denoiserConfig.hopSize)
 
-        // 4) 安装采集 tap
-        inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(denoiserConfig.hopSize * 4), format: inputFormat) { [weak self] buffer, _ in
+        // ---- 6) 安装采集 tap ----
+        // format 传 nil：用节点自己的格式，避免与硬件格式不一致触发断言。
+        inputNode.installTap(onBus: 0,
+                             bufferSize: AVAudioFrameCount(denoiserConfig.hopSize * 4),
+                             format: inputFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
             self.handleInput(buffer)
         }
+        tapInstalled = true
+        log.record("采集 tap", "已安装，bufferSize=\(denoiserConfig.hopSize * 4)")
 
-        // 5) 构建播放链（monitor 模式需要）
-        if mode == .monitor {
-            setupMonitorChain()
-        }
+        // ---- 7) 音频图 ----
+        // 关键：**输出链路必须完整**。只挂 tap 而不把任何东西连到 output
+        // 会让 AVAudioEngine 拿不到渲染驱动，start() 直接抛错或 tap 永不触发。
+        // 所以无论哪种模式都把 source node 接到主混音器，
+        // 静音模式用 outputVolume = 0 保证不外放（避免回授）。
+        setupOutputChain()
+        engine.mainMixerNode.outputVolume = (mode == .monitor) ? 1.0 : 0.0
+        log.record("音频图", "source → mainMixer，外放音量 \(mode == .monitor ? "开" : "关")")
 
-        // 6) 启动引擎
+        // ---- 8) 引擎 ----
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            log.failure("引擎 start()", "\(error.localizedDescription)")
+            throw EngineStartupError.engineStartFailed(error.localizedDescription)
+        }
+        log.record("引擎", "已启动，外放 \(mode == .monitor ? "开" : "静音")")
 
-        // 7) 启动处理定时器
         startProcessingTimer()
+    }
 
-        isRunning = true
-        setState(.learningNoise)
+    /// 回退状态（供 UI 提示）
+    private(set) var hardwareVoiceProcessingFallback = false
+    private var hardwareFallbackReason = ""
+
+    /// 拆除音频图与 tap，供重试前清理
+    private func teardown() {
+        processingTimer?.cancel()
+        processingTimer = nil
+
+        if tapInstalled {
+            inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        if let node = sourceNode { engine.detach(node) }
+        sourceNode = nil
+        if engine.isRunning { engine.stop() }
+        engine.reset()
+
+        // 复位硬件语音处理开关，否则重试时会带着上一次的半初始化状态
+        if isHardwareVoiceProcessingEnabled {
+            try? inputNode.setVoiceProcessingEnabled(false)
+            isHardwareVoiceProcessingEnabled = false
+        }
     }
 
     /// 停止引擎
     func stop() {
         guard isRunning else { return }
         isRunning = false
-
-        processingTimer?.cancel()
-        processingTimer = nil
-
-        inputNode.removeTap(onBus: 0)
-
-        if let node = sourceNode { engine.detach(node) }
-        sourceNode = nil
-
-        engine.stop()
-        engine.reset()
-
+        teardown()
+        hardwareVoiceProcessingFallback = false
         // AVAudioFile.close() 需要 iOS 18+；置空后由 deinit 负责关闭
         audioFile = nil
-
         AudioSessionConfigurator.deactivate()
         setState(.idle)
     }
@@ -352,12 +454,19 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
 
     // MARK: - 监控链
 
-    /// 建立外放链路：`AVAudioSourceNode`（从输出环形缓冲取数据）→ 主混音器 → 输出。
+    /// 建立输出链路：`AVAudioSourceNode`（从输出环形缓冲取数据）→ 主混音器 → 输出。
+    ///
+    /// 两种模式都建这条链路，区别只在 `mainMixerNode.outputVolume`：
+    /// - 监听模式 = 1，实时外放降噪后的声音
+    /// - 静音模式 = 0，不外放（避免和其他 App 的麦克风形成回授）
+    ///
+    /// 必须建图的原因：只挂 tap、不连输出，`AVAudioEngine` 缺少渲染驱动，
+    /// `start()` 会抛错或 tap 永不触发——这正是「点开始没反应」的一个典型成因。
     ///
     /// 注意：`AVAudioPlayerNode` 是**源节点**（没有输入端），
     /// 不能把 source node 接到 player node 上；直接连 `mainMixerNode` 才对。
-    /// 混音器和输出节点会以实时线程驱动 source node 的渲染回调。
-    private func setupMonitorChain() {
+    private func setupOutputChain() {
+        if sourceNode != nil { return }
         let node = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
             guard let self = self else { return noErr }
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
@@ -379,7 +488,6 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
     }
-
 
     // MARK: - 录音
 
