@@ -237,19 +237,20 @@ final class NoiseSuppressionEngine: @unchecked Sendable {
         }
     }
 
-    /// 动态调整降噪强度（0...1）
+    /// 动态调整降噪强度（0...1）。
+    ///
+    /// 只改增益参数，**不重建降噪器**：滑块是连续拖动的，
+    /// 每动一下就重置噪声学习会让人声在拖动期间忽隐忽现。
     func setStrength(_ strength: Float) {
         processingQueue.async { [weak self] in
             guard let self = self else { return }
             let s = min(max(strength, 0), 1)
-            var cfg = self.denoiserConfig
-            // 强度越高，谱底越高（保留越多语音），过子因子越低（噪声压得越狠）
-            cfg.spectralFloor = 0.04 + 0.25 * s
-            cfg.oversubtraction = 2.4 - 1.4 * s
-            self.denoiserConfig = cfg.validated()
-            self.denoiser = SpectralDenoiser(configuration: self.denoiserConfig)
-            self.workBuffer = [Float](repeating: 0, count: self.denoiserConfig.hopSize)
-            self.processedBuffer = [Float](repeating: 0, count: self.denoiserConfig.hopSize)
+            // 强度越高：谱底越高（保留越多语音），过子因子越低（噪声压得越狠）
+            let floor = 0.04 + 0.25 * s
+            let oversubtraction = 2.4 - 1.4 * s
+            self.denoiserConfig.spectralFloor = floor
+            self.denoiserConfig.oversubtraction = oversubtraction
+            self.denoiser.setStrength(spectralFloor: floor, oversubtraction: oversubtraction)
         }
     }
 

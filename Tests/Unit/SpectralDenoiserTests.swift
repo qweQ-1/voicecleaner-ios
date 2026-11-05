@@ -111,27 +111,61 @@ final class SpectralDenoiserTests: XCTestCase {
         XCTAssertLessThan(abs(mean), 0.02, "输出不应有直流分量，实际 \(mean)")
     }
 
-    /// 语音段应被保留（不能把整段都压掉）。
+    /// 语音应被保留。
+    ///
+    /// - Important: 这里的"语音"必须用**非平稳**信号（谐波 + 音节级调幅）。
+    ///   稳态纯正弦在统计上和稳态噪声无法区分，降噪器把它压掉是**正确行为**
+    ///   （风扇声、电流声就是这种）。早期版本用纯正弦做这个测试，
+    ///   得到的结论是错的。
     func testPreservesSpeechContent() {
         let denoiser = SpectralDenoiser(configuration: makeConfig())
         let sampleRate = 48_000.0
 
-        let noiseOnly = generateSignal(duration: 0.2, sampleRate: sampleRate, noiseLevel: 0.05,
+        // 先用纯噪声让噪声剖面收敛
+        let noiseOnly = generateSignal(duration: 0.6, sampleRate: sampleRate, noiseLevel: 0.08,
                                        speech: { _ in 0 })
         _ = denoiser.processBuffer(noiseOnly)
 
-        // 持续语音 + 噪声
-        let speech = generateSignal(duration: 0.4, sampleRate: sampleRate, noiseLevel: 0.05,
-                                    speech: { t in Float(sin(2 * .pi * 300 * t)) * 0.4 })
+        // 类语音：三个谐波 × 4 Hz 音节包络（与真实语音一样是非平稳的）
+        let syllabic: (Double) -> Float = { t in
+            let envelope = 0.5 * (1.0 + sin(2 * .pi * 4.0 * t))
+            let harmonics = 0.30 * sin(2 * .pi * 220 * t)
+                + 0.15 * sin(2 * .pi * 440 * t)
+                + 0.08 * sin(2 * .pi * 880 * t)
+            return Float(envelope * harmonics)
+        }
+        let speech = generateSignal(duration: 1.0, sampleRate: sampleRate, noiseLevel: 0.08,
+                                    speech: syllabic)
         let output = denoiser.processBuffer(speech)
 
-        let speechStart = Int(0.2 * sampleRate)
-        let inputRMS = AudioMath.rms(speech[speechStart..<speech.count])
-        let outputRMS = AudioMath.rms(output[speechStart..<output.count])
+        let start = Int(0.2 * sampleRate)
+        let inputRMS = AudioMath.rms(speech[start..<speech.count])
+        let outputRMS = AudioMath.rms(output[start..<output.count])
 
-        // 语音应保留大部分能量（不能衰减到 30% 以下）
         XCTAssertGreaterThan(outputRMS, inputRMS * 0.3,
                              "语音能量不应被过度压制：输入 \(inputRMS) → 输出 \(outputRMS)")
+    }
+
+    /// 稳态纯音（噪声）应被显著压制——这是与「语音保留」配对的反向保证。
+    func testSuppressesStationaryTone() {
+        let denoiser = SpectralDenoiser(configuration: makeConfig())
+        let sampleRate = 48_000.0
+
+        let noiseOnly = generateSignal(duration: 0.6, sampleRate: sampleRate, noiseLevel: 0.02,
+                                       speech: { _ in 0 })
+        _ = denoiser.processBuffer(noiseOnly)
+
+        // 稳态 300 Hz 纯音 + 少量噪声：与稳态噪声不可区分，应被压掉
+        let tone = generateSignal(duration: 1.0, sampleRate: sampleRate, noiseLevel: 0.02,
+                                  speech: { t in Float(sin(2 * .pi * 300 * t)) * 0.4 })
+        let output = denoiser.processBuffer(tone)
+
+        let start = Int(0.4 * sampleRate)
+        let inputRMS = AudioMath.rms(tone[start..<tone.count])
+        let outputRMS = AudioMath.rms(output[start..<output.count])
+
+        XCTAssertLessThan(outputRMS, inputRMS * 0.5,
+                          "稳态纯音应被压制：输入 \(inputRMS) → 输出 \(outputRMS)")
     }
 
     /// reset 后应重新进入学习状态。
