@@ -15,9 +15,10 @@ toolchain:
   simulator: iPhone 17 Pro
   ios: '26.4'
 
+# 本项目只有逻辑测试（DSP、环形缓冲），没有 UI 测试，
+# 所以只配 test_plan，不配 fast/full 双线和 ui_test_target。
 build_test:
-  fast_test_plan: Fast
-  full_test_plan: Full
+  test_plan: Fast
   accessibility_audit: warn
 
 testflight:
